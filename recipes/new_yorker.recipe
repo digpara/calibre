@@ -39,7 +39,6 @@ class NewYorker(BasicNewsRecipe):
                 h3 { margin-bottom: 6px; }
                 .caption { font-size: xx-small; font-style: italic; font-weight: normal; }
                 '''
-    needs_subscription = 'optional'
     keep_only_tags = [
         dict(attrs={'class': lambda x: x and 'ArticleHeader__hed___' in x}),
         dict(attrs={'class': lambda x: x and 'ArticleHeader__dek___' in x}),
@@ -56,6 +55,8 @@ class NewYorker(BasicNewsRecipe):
     remove_tags = [
         classes('content-ad-wrapper social-hover background-image'),
         dict(id=['newsletter-signup']),
+        dict(attrs={'class': lambda x: x and 'ImageEmbed__button___' in x}),
+        dict(attrs={'class': lambda x: x and 'ArticleLedeImage__button___' in x}),
         dict(name='links source'.split()), ]
     remove_attributes = ['style']
 
@@ -80,8 +81,9 @@ class NewYorker(BasicNewsRecipe):
             except KeyError:
                 section = last_section
             last_section = section
-            a = story.find('h4').find('a')
-            title = a.contents[1]
+            h4 = story.find('h4')
+            title = self.tag_to_string(h4)
+            a = story.find('h4').parent
             url = absurl(a['href'])
             desc = ''
             body = story.find(attrs={'class': 'River__dek___CayIg'})

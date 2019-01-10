@@ -8,10 +8,8 @@ from hashlib import sha1
 from functools import partial
 from threading import RLock, Lock
 from cPickle import dumps
-from zipfile import ZipFile
 import errno, os, tempfile, shutil, time, json as jsonlib
 
-from lzma.xz import decompress
 from calibre.constants import cache_dir, iswindows
 from calibre.customize.ui import plugin_for_input_format
 from calibre.srv.metadata import book_as_json
@@ -148,7 +146,7 @@ def book_manifest(ctx, rd, book_id, fmt):
                     ans = jsonlib.load(f)
                 ans['metadata'] = book_as_json(db, book_id)
                 user = rd.username or None
-                ans['last_read_positions'] = db.get_last_read_positions(book_id, fmt, user)
+                ans['last_read_positions'] = db.get_last_read_positions(book_id, fmt, user) if user else []
                 return ans
             except EnvironmentError as e:
                 if e.errno != errno.ENOENT:
@@ -189,6 +187,8 @@ def get_last_read_position(ctx, rd, library_id, which):
     '''
     db = get_db(ctx, rd, library_id)
     user = rd.username or None
+    if not user:
+        raise HTTPNotFound('login required for sync')
     ans = {}
     allowed_book_ids = ctx.allowed_book_ids(rd, db)
     for item in which.split('_'):
@@ -225,33 +225,21 @@ mathjax_lock = Lock()
 mathjax_manifest = None
 
 
-def get_mathjax_manifest(tdir=None):
+def manifest_as_json():
+    return P('mathjax/manifest.json', data=True, allow_user_override=False)
+
+
+def get_mathjax_manifest():
     global mathjax_manifest
     with mathjax_lock:
         if mathjax_manifest is None:
-            mathjax_manifest = {}
-            f = decompress(P('content-server/mathjax.zip.xz', data=True, allow_user_override=False))
-            f.seek(0)
-            tdir = os.path.join(tdir, 'mathjax')
-            os.mkdir(tdir)
-            zf = ZipFile(f)
-            zf.extractall(tdir)
-            mathjax_manifest['etag'] = type('')(zf.comment)
-            mathjax_manifest['files'] = {type('')(zi.filename):zi.file_size for zi in zf.infolist()}
-            zf.close(), f.close()
-        return mathjax_manifest
-
-
-def manifest_as_json():
-    ans = jsonlib.dumps(get_mathjax_manifest(), ensure_ascii=False)
-    if not isinstance(ans, bytes):
-        ans = ans.encode('utf-8')
-    return ans
+            mathjax_manifest = jsonlib.loads(manifest_as_json())
+    return mathjax_manifest
 
 
 @endpoint('/mathjax/{+which=""}', auth_required=False)
 def mathjax(ctx, rd, which):
-    manifest = get_mathjax_manifest(rd.tdir)
+    manifest = get_mathjax_manifest()
     if not which:
         return rd.etagged_dynamic_response(manifest['etag'], manifest_as_json, content_type='application/json; charset=UTF-8')
     if which not in manifest['files']:

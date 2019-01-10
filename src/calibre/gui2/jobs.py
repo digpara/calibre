@@ -249,6 +249,9 @@ class JobManager(QAbstractTableModel, AdaptSQP):  # {{{
     def row_to_job(self, row):
         return self.jobs[row]
 
+    def rows_to_jobs(self, rows):
+        return [self.jobs[row] for row in rows]
+
     def has_device_jobs(self, queued_also=False):
         for job in self.jobs:
             if isinstance(job, DeviceJob):
@@ -300,8 +303,7 @@ class JobManager(QAbstractTableModel, AdaptSQP):  # {{{
         for r in xrange(len(self.jobs)):
             self.dataChanged.emit(self.index(r, 0), self.index(r, 0))
 
-    def kill_job(self, row, view):
-        job = self.jobs[row]
+    def kill_job(self, job, view):
         if isinstance(job, DeviceJob):
             return error_dialog(view, _('Cannot kill job'),
                          _('Cannot kill jobs that communicate with the device')).exec_()
@@ -313,8 +315,7 @@ class JobManager(QAbstractTableModel, AdaptSQP):  # {{{
                     _('This job cannot be stopped'), show=True)
         self._kill_job(job)
 
-    def kill_multiple_jobs(self, rows, view):
-        jobs = [self.jobs[row] for row in rows]
+    def kill_multiple_jobs(self, jobs, view):
         devjobs = [j for j in jobs if isinstance(j, DeviceJob)]
         if devjobs:
             error_dialog(view, _('Cannot kill job'),
@@ -350,8 +351,8 @@ class JobManager(QAbstractTableModel, AdaptSQP):  # {{{
                 self._kill_job(job)
 
     def universal_set(self):
-        return set([i for i, j in enumerate(self.jobs) if not getattr(j,
-            'hidden_in_gui', False)])
+        return {i for i, j in enumerate(self.jobs) if not getattr(j,
+            'hidden_in_gui', False)}
 
     def get_matches(self, location, query, candidates=None):
         if candidates is None:
@@ -442,6 +443,15 @@ class DetailView(Dialog):  # {{{
     def sizeHint(self):
         return QSize(700, 500)
 
+    @property
+    def plain_text(self):
+        if self.html_view:
+            return self.tb.toPlainText()
+        return self.log.toPlainText()
+
+    def copy_to_clipboard(self):
+        QApplication.instance().clipboard().setText(self.plain_text)
+
     def setup_ui(self):
         self.l = l = QVBoxLayout(self)
         if self.html_view:
@@ -452,6 +462,9 @@ class DetailView(Dialog):  # {{{
         l.addWidget(w)
         l.addWidget(self.bb)
         self.bb.clear(), self.bb.setStandardButtons(self.bb.Close)
+        self.copy_button = b = self.bb.addButton(_('&Copy to clipboard'), self.bb.ActionRole)
+        b.setIcon(QIcon(I('edit-copy.png')))
+        b.clicked.connect(self.copy_to_clipboard)
         self.next_pos = 0
         self.update()
         self.timer = QTimer(self)
@@ -622,8 +635,7 @@ class JobsDialog(QDialog, Ui_JobsDialog):
         self.search.initialize('jobs_search_history',
                 help_text=_('Search for a job by name'))
         self.search.search.connect(self.find)
-        self.search_button.clicked.connect(lambda :
-                self.find(self.search.current_text))
+        connect_lambda(self.search_button.clicked, self, lambda self: self.find(self.search.current_text))
         self.restore_state()
 
     def restore_state(self):
@@ -667,18 +679,18 @@ class JobsDialog(QDialog, Ui_JobsDialog):
         indices = [self.proxy_model.mapToSource(index) for index in
                 self.jobs_view.selectionModel().selectedRows()]
         indices = [i for i in indices if i.isValid()]
-        rows = [index.row() for index in indices]
-        if not rows:
+        jobs = self.model.rows_to_jobs([index.row() for index in indices])
+        if not jobs:
             return error_dialog(self, _('No job'),
                 _('No job selected'), show=True)
         if question_dialog(self, _('Are you sure?'),
                 ngettext('Do you really want to stop the selected job?',
                     'Do you really want to stop all the selected jobs?',
-                    len(rows))):
-            if len(rows) > 1:
-                self.model.kill_multiple_jobs(rows, self)
+                    len(jobs))):
+            if len(jobs) > 1:
+                self.model.kill_multiple_jobs(jobs, self)
             else:
-                self.model.kill_job(rows[0], self)
+                self.model.kill_job(jobs[0], self)
 
     def kill_all_jobs(self, *args):
         if question_dialog(self, _('Are you sure?'),

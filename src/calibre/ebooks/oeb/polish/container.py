@@ -14,12 +14,12 @@ import time
 import unicodedata
 import uuid
 from collections import defaultdict
-from future_builtins import zip
+from polyglot.builtins import zip
 from io import BytesIO
 from itertools import count
 from urlparse import urlparse
 
-from cssutils import getUrls, replaceUrls
+from css_parser import getUrls, replaceUrls
 from lxml import etree
 
 from calibre import CurrentDir, walk
@@ -525,6 +525,11 @@ class Container(ContainerBase):  # {{{
         ''' Return True iff a file with the same canonical name as that specified exists. Unlike :meth:`exists` this method is always case-sensitive. '''
         return name and name in self.name_path_map
 
+    def has_name_and_is_not_empty(self, name):
+        if not self.has_name(name):
+            return False
+        return os.path.getsize(self.name_path_map[name]) > 0
+
     def has_name_case_insensitive(self, name):
         if not name:
             return False
@@ -559,7 +564,7 @@ class Container(ContainerBase):  # {{{
         return set()
 
     def parse(self, path, mime):
-        with open(path, 'rb') as src:
+        with lopen(path, 'rb') as src:
             data = src.read()
         if mime in OEB_DOCS:
             data = self.parse_xhtml(data, self.relpath(path))
@@ -584,7 +589,7 @@ class Container(ContainerBase):  # {{{
 
     def parsed(self, name):
         ''' Return a parsed representation of the file specified by name. For
-        HTML and XML files an lxml tree is returned. For CSS files a cssutils
+        HTML and XML files an lxml tree is returned. For CSS files a css_parser
         stylesheet is returned. Note that parsed objects are cached for
         performance. If you make any changes to the parsed object, you must
         call :meth:`dirty` so that the container knows to update the cache. See also :meth:`replace`.'''
@@ -600,7 +605,7 @@ class Container(ContainerBase):  # {{{
     def replace(self, name, obj):
         '''
         Replace the parsed object corresponding to name with obj, which must be
-        a similar object, i.e. an lxml tree for HTML/XML or a cssutils
+        a similar object, i.e. an lxml tree for HTML/XML or a css_parser
         stylesheet for a CSS file.
         '''
         self.parsed_cache[name] = obj
@@ -743,6 +748,14 @@ class Container(ContainerBase):  # {{{
                     non_linear.append((item, name))
         for item, name in non_linear:
             yield item, name, False
+
+    def index_in_spine(self, name):
+        manifest_id_map = self.manifest_id_map
+        for i, item in enumerate(self.opf_xpath('//opf:spine/opf:itemref[@idref]')):
+            idref = item.get('idref')
+            q = manifest_id_map.get(idref, None)
+            if q == name:
+                return i
 
     @property
     def spine_names(self):
@@ -931,7 +944,7 @@ class Container(ContainerBase):  # {{{
         base = os.path.dirname(path)
         if not os.path.exists(base):
             os.makedirs(base)
-        open(path, 'wb').close()
+        lopen(path, 'wb').close()
         return item
 
     def format_opf(self):
@@ -945,8 +958,8 @@ class Container(ContainerBase):  # {{{
             for child in mdata:
                 child.tail = '\n    '
                 try:
-                    if (child.get('name', '').startswith('calibre:') and
-                        child.get('content', '').strip() in {'{}', ''}):
+                    if (child.get('name', '').startswith('calibre:'
+                        ) and child.get('content', '').strip() in {'{}', ''}):
                         remove.add(child)
                 except AttributeError:
                     continue  # Happens for XML comments
@@ -986,7 +999,7 @@ class Container(ContainerBase):  # {{{
         if self.cloned and nlinks_file(dest) > 1:
             # Decouple this file from its links
             os.unlink(dest)
-        with open(dest, 'wb') as f:
+        with lopen(dest, 'wb') as f:
             f.write(data)
 
     def filesize(self, name):
@@ -1027,7 +1040,7 @@ class Container(ContainerBase):  # {{{
         this will commit the file if it is dirtied and remove it from the parse
         cache. You must finish with this file before accessing the parsed
         version of it again, or bad things will happen. '''
-        return open(self.get_file_path_for_processing(name, mode not in {'r', 'rb'}), mode)
+        return lopen(self.get_file_path_for_processing(name, mode not in {'r', 'rb'}), mode)
 
     def commit(self, outpath=None, keep_parsed=False):
         '''
@@ -1045,7 +1058,7 @@ class Container(ContainerBase):  # {{{
         mismatches = []
         for name, path in self.name_path_map.iteritems():
             opath = other.name_path_map[name]
-            with open(path, 'rb') as f1, open(opath, 'rb') as f2:
+            with lopen(path, 'rb') as f1, lopen(opath, 'rb') as f2:
                 if f1.read() != f2.read():
                     mismatches.append('The file %s is not the same'%name)
         return '\n'.join(mismatches)
@@ -1118,7 +1131,7 @@ class EpubContainer(Container):
                 if fname is not None:
                     shutil.copy(os.path.join(dirpath, fname), os.path.join(base, fname))
         else:
-            with open(self.pathtoepub, 'rb') as stream:
+            with lopen(self.pathtoepub, 'rb') as stream:
                 try:
                     zf = ZipFile(stream)
                     zf.extractall(tdir)
@@ -1286,8 +1299,19 @@ class EpubContainer(Container):
                 f.write(raw)
             self.obfuscated_fonts[font] = (alg, tkey)
 
+    def update_modified_timestamp(self):
+        from calibre.ebooks.metadata.opf3 import set_last_modified_in_opf
+        set_last_modified_in_opf(self.opf)
+        self.dirty(self.opf_name)
+
     def commit(self, outpath=None, keep_parsed=False):
+        if self.opf_version_parsed.major == 3:
+            self.update_modified_timestamp()
         super(EpubContainer, self).commit(keep_parsed=keep_parsed)
+        container_path = join(self.root, 'META-INF', 'container.xml')
+        if not exists(container_path):
+            raise InvalidEpub('No META-INF/container.xml in EPUB, this typically happens if the temporary files calibre'
+                              ' is using are deleted by some other program while calibre is running')
         restore_fonts = {}
         for name in self.obfuscated_fonts:
             if name not in self.name_path_map:
@@ -1324,12 +1348,12 @@ class EpubContainer(Container):
                     if err.errno != errno.EEXIST:
                         raise
                 for fname in filenames:
-                    with open(os.path.join(dirpath, fname), 'rb') as src, open(os.path.join(base, fname), 'wb') as dest:
+                    with lopen(os.path.join(dirpath, fname), 'rb') as src, lopen(os.path.join(base, fname), 'wb') as dest:
                         shutil.copyfileobj(src, dest)
 
         else:
             from calibre.ebooks.tweak import zip_rebuilder
-            with open(join(self.root, 'mimetype'), 'wb') as f:
+            with lopen(join(self.root, 'mimetype'), 'wb') as f:
                 f.write(guess_type('a.epub'))
             zip_rebuilder(self.root, outpath)
             for name, data in restore_fonts.iteritems():
@@ -1415,7 +1439,7 @@ class AZW3Container(Container):
             tdir = PersistentTemporaryDirectory('_azw3_container')
         tdir = os.path.abspath(os.path.realpath(tdir))
         self.root = tdir
-        with open(pathtoazw3, 'rb') as stream:
+        with lopen(pathtoazw3, 'rb') as stream:
             raw = stream.read(3)
             if raw == b'TPZ':
                 raise InvalidMobi(_('This is not a MOBI file. It is a Topaz file.'))

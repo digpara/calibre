@@ -8,7 +8,6 @@ import json
 import re
 import time
 from collections import defaultdict, namedtuple
-from future_builtins import map
 from urllib import quote_plus, urlencode
 from urlparse import parse_qs
 
@@ -18,7 +17,7 @@ from calibre import browser as _browser, prints, random_user_agent
 from calibre.utils.monotonic import monotonic
 from calibre.utils.random_ua import accept_header_for_ua
 
-current_version = (1, 0, 0)
+current_version = (1, 0, 2)
 minimum_calibre_version = (2, 80, 0)
 
 
@@ -230,10 +229,14 @@ def google_search(terms, site=None, br=None, log=prints, safe_search=False, dump
     root = query(br, url, 'google', dump_raw, timeout=timeout)
     ans = []
     for div in root.xpath('//*[@id="search"]//*[@id="rso"]//*[@class="g"]'):
-        a = div.xpath('descendant::h3[@class="r"]/a[@href]')[0]
+        try:
+            a = div.xpath('descendant::div[@class="r"]/a[@href]')[0]
+        except IndexError:
+            log('Ignoring div with no descendant')
+            continue
         title = tostring(a)
         try:
-            c = div.xpath('descendant::div[@class="s"]//a[@class="fl"]')[0]
+            c = div.xpath('descendant::div[@role="menu"]//a[@class="fl"]')[0]
         except IndexError:
             log('Ignoring {!r} as it has no cached page'.format(title))
             continue
@@ -245,9 +248,9 @@ def google_search(terms, site=None, br=None, log=prints, safe_search=False, dump
     return ans, url
 
 
-def google_develop():
+def google_develop(search_terms='1423146786'):
     br = browser()
-    for result in google_search('1423146786'.split(), 'www.amazon.com', dump_raw='/t/raw.html', br=br)[0]:
+    for result in google_search(search_terms.split(), 'www.amazon.com', dump_raw='/t/raw.html', br=br)[0]:
         if '/dp/' in result.url:
             print(result.title)
             print(' ', result.url)

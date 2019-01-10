@@ -23,6 +23,7 @@ from PyQt5.Qt import (
 
 from calibre import fit_image, prints, prepare_string_for_xml, human_readable
 from calibre.constants import DEBUG, config_dir, islinux
+from calibre.gui2.pin_columns import PinContainer
 from calibre.ebooks.metadata import fmt_sidx, rating_to_stars
 from calibre.utils import join_with_timeout
 from calibre.gui2 import gprefs, config, rating_font, empty_index
@@ -35,11 +36,39 @@ CACHE_FORMAT = 'PPM'
 
 
 def auto_height(widget):
-    return max(185, QApplication.instance().desktop().availableGeometry(widget).height() / 5.0)
+    # On some broken systems, availableGeometry() returns tiny values, we need
+    # a value of at least 1000 for 200 DPI systems.
+    return max(1000, QApplication.instance().desktop().availableGeometry(widget).height()) / 5.0
 
 
 class EncodeError(ValueError):
     pass
+
+
+def handle_enter_press(self, ev, special_action=None, has_edit_cell=True):
+    if ev.key() in (Qt.Key_Enter, Qt.Key_Return):
+        mods = ev.modifiers()
+        if mods & Qt.CTRL or mods & Qt.ALT or mods & Qt.SHIFT or mods & Qt.META:
+            return
+        if self.state() != self.EditingState and self.hasFocus() and self.currentIndex().isValid():
+            from calibre.gui2.ui import get_gui
+            ev.ignore()
+            tweak = tweaks['enter_key_behavior']
+            gui = get_gui()
+            if tweak == 'edit_cell':
+                if has_edit_cell:
+                    self.edit(self.currentIndex(), self.EditKeyPressed, ev)
+                else:
+                    gui.iactions['Edit Metadata'].edit_metadata(False)
+            elif tweak == 'edit_metadata':
+                gui.iactions['Edit Metadata'].edit_metadata(False)
+            elif tweak == 'do_nothing':
+                pass
+            else:
+                if special_action is not None:
+                    special_action(self.currentIndex())
+                gui.iactions['View'].view_triggered(self.currentIndex())
+            return True
 
 
 def image_to_data(image):  # {{{
@@ -172,17 +201,33 @@ def mouseMoveEvent(base_class, self, event):
     self.drag_start_pos = None
 
 
+def dnd_merge_ok(md):
+    return md.hasFormat('application/calibre+from_library') and gprefs['dnd_merge']
+
+
 def dragEnterEvent(self, event):
     if int(event.possibleActions() & Qt.CopyAction) + \
         int(event.possibleActions() & Qt.MoveAction) == 0:
         return
     paths = self.paths_from_event(event)
+    md = event.mimeData()
 
-    if paths:
+    if paths or dnd_merge_ok(md):
         event.acceptProposedAction()
 
 
 def dropEvent(self, event):
+    md = event.mimeData()
+    if dnd_merge_ok(md):
+        ids = set(map(int, bytes(md.data('application/calibre+from_library')).decode('utf-8').split(' ')))
+        row = self.indexAt(event.pos()).row()
+        if row > -1 and ids:
+            book_id = self.model().id(row)
+            if book_id and book_id not in ids:
+                self.books_dropped.emit({book_id: ids})
+                event.setDropAction(Qt.CopyAction)
+                event.accept()
+        return
     paths = self.paths_from_event(event)
     event.setDropAction(Qt.CopyAction)
     event.accept()
@@ -198,8 +243,7 @@ def paths_from_event(self, event):
     if md.hasFormat('text/uri-list') and not \
             md.hasFormat('application/calibre+from_library'):
         urls = [unicode(u.toLocalFile()) for u in md.urls()]
-        return [u for u in urls if os.path.splitext(u)[1] and
-                os.path.exists(u)]
+        return [u for u in urls if os.path.splitext(u)[1] and os.path.exists(u)]
 
 
 def setup_dnd_interface(cls_or_self):
@@ -250,7 +294,9 @@ class AlternateViews(object):
 
     def set_stack(self, stack):
         self.stack = stack
-        self.stack.addWidget(self.main_view)
+        pin_container = PinContainer(self.main_view, stack)
+        self.stack.addWidget(pin_container)
+        return pin_container
 
     def add_view(self, key, view):
         self.views[key] = view
@@ -261,6 +307,7 @@ class AlternateViews(object):
         view.selectionModel().currentChanged.connect(self.slave_current_changed)
         view.selectionModel().selectionChanged.connect(self.slave_selection_changed)
         view.files_dropped.connect(self.main_view.files_dropped)
+        view.books_dropped.connect(self.main_view.books_dropped)
 
     def show_view(self, key=None):
         view = self.views[key]
@@ -633,6 +680,7 @@ class GridView(QListView):
 
     update_item = pyqtSignal(object)
     files_dropped = pyqtSignal(object)
+    books_dropped = pyqtSignal(object)
 
     def __init__(self, parent):
         QListView.__init__(self, parent)
@@ -714,11 +762,14 @@ class GridView(QListView):
         for r in xrange(self.first_visible_row or 0, self.last_visible_row or (m.count() - 1)):
             self.update(m.index(r, 0))
 
-    def double_clicked(self, index):
+    def start_view_animation(self, index):
         d = self.delegate
         if d.animating is None and not config['disable_animations']:
             d.animating = index
             d.animation.start()
+
+    def double_clicked(self, index):
+        self.start_view_animation(index)
         if tweaks['doubleclick_on_library_view'] == 'open_viewer':
             self.gui.iactions['View'].view_triggered(index)
         elif tweaks['doubleclick_on_library_view'] in {'edit_metadata', 'edit_cell'}:
@@ -756,13 +807,13 @@ class GridView(QListView):
 
     def refresh_settings(self):
         size_changed = (
-            gprefs['cover_grid_width'] != self.delegate.original_width or
-            gprefs['cover_grid_height'] != self.delegate.original_height
+            gprefs['cover_grid_width'] != self.delegate.original_width or gprefs['cover_grid_height'] != self.delegate.original_height
         )
-        if (size_changed or gprefs['cover_grid_show_title'] != self.delegate.original_show_title or
-                gprefs['show_emblems'] != self.delegate.original_show_emblems or
-                gprefs['emblem_size'] != self.delegate.orginal_emblem_size or
-                gprefs['emblem_position'] != self.delegate.orginal_emblem_position):
+        if (size_changed or gprefs[
+            'cover_grid_show_title'] != self.delegate.original_show_title or gprefs[
+                'show_emblems'] != self.delegate.original_show_emblems or gprefs[
+                    'emblem_size'] != self.delegate.orginal_emblem_size or gprefs[
+                        'emblem_position'] != self.delegate.orginal_emblem_position):
             self.delegate.set_dimensions()
             self.setSpacing(self.delegate.spacing)
             if size_changed:
@@ -918,7 +969,7 @@ class GridView(QListView):
         # Create a range based selector for each set of contiguous rows
         # as supplying selectors for each individual row causes very poor
         # performance if a large number of rows has to be selected.
-        for k, g in itertools.groupby(enumerate(rows), lambda (i,x):i-x):
+        for k, g in itertools.groupby(enumerate(rows), lambda i_x:i_x[0]-i_x[1]):
             group = list(map(operator.itemgetter(1), g))
             sel.merge(QItemSelection(m.index(min(group), 0), m.index(max(group), 0)), sm.Select)
         sm.select(sel, sm.ClearAndSelect)
@@ -984,6 +1035,9 @@ class GridView(QListView):
         else:
             return QListView.mousePressEvent(self, ev)
 
+    def indices_for_merge(self, resolved=True):
+        return self.selectionModel().selectedIndexes()
+
     def number_of_columns(self):
         # Number of columns currently visible in the grid
         if self._ncols is None:
@@ -1000,6 +1054,8 @@ class GridView(QListView):
         return self._ncols
 
     def keyPressEvent(self, ev):
+        if handle_enter_press(self, ev, self.start_view_animation, False):
+            return
         k = ev.key()
         if ev.modifiers() & Qt.ShiftModifier and k in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
             ci = self.currentIndex()

@@ -9,7 +9,7 @@ __copyright__ = '2013, Kovid Goyal <kovid at kovidgoyal.net>'
 import logging
 from collections import defaultdict
 
-import cssutils
+import css_parser
 from lxml import etree
 
 from calibre import guess_type
@@ -97,7 +97,7 @@ class EmbedFonts(object):
         self.sheet_cache = {}
         self.find_style_rules()
         self.find_embedded_fonts()
-        self.parser = cssutils.CSSParser(loglevel=logging.CRITICAL, log=logging.getLogger('calibre.css'))
+        self.parser = css_parser.CSSParser(loglevel=logging.CRITICAL, log=logging.getLogger('calibre.css'))
         self.warned = set()
         self.warned2 = set()
         self.newly_embedded_fonts = set()
@@ -156,7 +156,7 @@ class EmbedFonts(object):
             manifest = self.oeb.manifest
             id_, href = manifest.generate('page_css', 'page_styles.css')
             self.page_sheet = manifest.add(id_, href, CSS_MIME, data=self.parser.parseString('', validate=False))
-            head = self.current_item.xpath('//*[local-name()="head"][1]')
+            head = self.current_item.data.xpath('//*[local-name()="head"][1]')
             if head:
                 href = self.current_item.relhref(href)
                 l = etree.SubElement(head[0], XHTML('link'),

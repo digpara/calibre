@@ -2,8 +2,10 @@
 # License: GPL v3 Copyright: 2016, Kovid Goyal <kovid at kovidgoyal.net>
 from __python__ import hash_literals
 
-from dom import clear
+from elementmaker import E
 from encodings import base64decode, utf8_decode
+
+from dom import clear
 
 JSON_XHTML_MIMETYPE = 'application/calibre+xhtml+json'
 
@@ -220,7 +222,7 @@ def process_stack(stack, tag_map, ns_map, load_required, onload, resource_urls):
         for v'var i = node.length - 1; i >= 1; i--':  # noqa: unused-local
             stack.push(v'[node[i], elem]')
 
-def unserialize_html(serialized_data, proceed):
+def unserialize_html(serialized_data, proceed, postprocess_dom):
     tag_map = serialized_data.tag_map
     tree = serialized_data.tree
     ns_map = serialized_data.ns_map
@@ -228,6 +230,8 @@ def unserialize_html(serialized_data, proceed):
     apply_attributes(html, document.documentElement, ns_map)
     head, body = tree[1], tree[2]  # noqa: unused-local
     clear(document.head, document.body)
+    # Default stylesheet
+    document.head.appendChild(E.style(type='text/css', 'html {{ font-family: {} }}'.format(window.default_font_family or "sans-serif")))
     resource_urls = {}
     load_required = set()
     proceeded = False
@@ -258,6 +262,8 @@ def unserialize_html(serialized_data, proceed):
     for v'var i = body.length - 1; i >= 1; i--':  # noqa: unused-local
         stack.push(v'[body[i], document.body]')
     process_stack(stack, tag_map, ns_map, load_required, onload, resource_urls)
+    if postprocess_dom:
+        postprocess_dom()
     ev = document.createEvent('Event')
     ev.initEvent('DOMContentLoaded', True, True)
     document.dispatchEvent(ev)

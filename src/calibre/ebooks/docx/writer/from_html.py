@@ -168,19 +168,19 @@ class Block(object):
                 next_block.list_tag = self.list_tag
 
     def add_text(self, text, style, ignore_leading_whitespace=False, html_parent=None, is_parent_style=False, bookmark=None, link=None, lang=None):
-        ts = self.styles_manager.create_text_style(style, is_parent_style=is_parent_style)
         ws = style['white-space']
+        preserve_whitespace = ws in {'pre', 'pre-wrap', '-o-pre-wrap'}
+        ts = self.styles_manager.create_text_style(style, is_parent_style=is_parent_style)
         if self.runs and ts == self.runs[-1].style and link == self.runs[-1].link and lang == self.runs[-1].lang:
             run = self.runs[-1]
         else:
             run = TextRun(self.namespace, ts, self.html_block if html_parent is None else html_parent, lang=lang)
             self.runs.append(run)
-        preserve_whitespace = ws in {'pre', 'pre-wrap'}
         if ignore_leading_whitespace and not preserve_whitespace:
             text = text.lstrip()
-        if ws == 'pre-line':
+        if preserve_whitespace or ws == 'pre-line':
             for text in text.splitlines():
-                run.add_text(text, False, bookmark=bookmark, link=link)
+                run.add_text(text, preserve_whitespace, bookmark=bookmark, link=link)
                 bookmark = None
                 run.add_break()
         else:
@@ -251,6 +251,7 @@ class Block(object):
 class Blocks(object):
 
     def __init__(self, namespace, styles_manager, links_manager):
+        self.top_bookmark = None
         self.namespace = namespace
         self.styles_manager = styles_manager
         self.links_manager = links_manager
@@ -372,6 +373,9 @@ class Blocks(object):
         if self.pos > 0 and self.pos < len(self.all_blocks):
             # Insert a page break corresponding to the start of the html file
             self.all_blocks[self.pos].page_break_before = True
+            if self.top_bookmark is not None:
+                self.all_blocks[self.pos].bookmarks.add(self.top_bookmark)
+        self.top_bookmark = None
         self.block_map = {}
 
     def apply_page_break_after(self):
@@ -472,7 +476,7 @@ class Convert(object):
         self.current_lang = lang_for_tag(item.data) or self.styles_manager.document_lang
         for i, body in enumerate(XPath('//h:body')(item.data)):
             with self.blocks:
-                self.links_manager.bookmark_for_anchor(self.links_manager.top_anchor, self.current_item, body)
+                self.blocks.top_bookmark = self.links_manager.bookmark_for_anchor(self.links_manager.top_anchor, self.current_item, body)
                 self.process_tag(body, stylizer, is_first_tag=i == 0)
 
     def process_tag(self, html_tag, stylizer, is_first_tag=False, float_spec=None):
@@ -522,8 +526,14 @@ class Convert(object):
                             tag_style.set('border-%s-style' % edge, 'none')
                     self.add_block_tag(tagname, html_tag, tag_style, stylizer, float_spec=float_spec)
 
-            for child in html_tag.iterchildren('*'):
-                self.process_tag(child, stylizer, float_spec=float_spec)
+            for child in html_tag.iterchildren():
+                if isinstance(getattr(child, 'tag', None), basestring):
+                    self.process_tag(child, stylizer, float_spec=float_spec)
+                else:  # Comment/PI/etc.
+                    tail = getattr(child, 'tail', None)
+                    if tail:
+                        block = self.create_block_from_parent(html_tag, stylizer)
+                        block.add_text(tail, tag_style, is_parent_style=False, link=self.current_link, lang=self.current_lang)
 
             is_block = html_tag in self.blocks.open_html_blocks
             self.blocks.finish_tag(html_tag)

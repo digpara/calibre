@@ -9,7 +9,7 @@ from PyQt5.Qt import (
     QFileInfo, QObject, QBuffer, Qt, QByteArray, QTranslator, QSocketNotifier,
     QCoreApplication, QThread, QEvent, QTimer, pyqtSignal, QDateTime, QFontMetrics,
     QDesktopServices, QFileDialog, QFileIconProvider, QSettings, QIcon, QStringListModel,
-    QApplication, QDialog, QUrl, QFont, QFontDatabase, QLocale, QFontInfo)
+    QApplication, QDialog, QUrl, QFont, QFontDatabase, QLocale, QFontInfo, QT_VERSION)
 
 from calibre import prints, as_unicode
 from calibre.constants import (islinux, iswindows, isbsd, isfrozen, isosx, is_running_from_develop,
@@ -26,7 +26,8 @@ from calibre.utils.file_type_icons import EXT_MAP
 try:
     NO_URL_FORMATTING = QUrl.None_
 except AttributeError:
-    NO_URL_FORMATTING = QUrl.None
+    NO_URL_FORMATTING = getattr(QUrl, 'None')
+
 
 # Setup gprefs {{{
 gprefs = JSONConfig('gui')
@@ -87,6 +88,13 @@ def create_defs():
             'Similar Books', 'Tweak ePub', None, 'Remove Books',
             )
 
+    defs['action-layout-context-menu-split'] = (
+            'Edit Metadata', 'Send To Device', 'Save To Disk',
+            'Connect Share', 'Copy To Library', None,
+            'Convert Books', 'View', 'Open Folder', 'Show Book Details',
+            'Similar Books', 'Tweak ePub', None, 'Remove Books',
+            )
+
     defs['action-layout-context-menu-device'] = (
             'View', 'Save To Disk', None, 'Remove Books', None,
             'Add To Library', 'Edit Collections', 'Match Books'
@@ -139,6 +147,7 @@ def create_defs():
     defs['cover_grid_show_title'] = False
     defs['cover_grid_texture'] = None
     defs['show_vl_tabs'] = False
+    defs['vl_tabs_closable'] = True
     defs['show_highlight_toggle_button'] = False
     defs['add_comments_to_email'] = False
     defs['cb_preserve_aspect_ratio'] = False
@@ -148,6 +157,7 @@ def create_defs():
     defs['emblem_position'] = 'left'
     defs['metadata_diff_mark_rejected'] = False
     defs['tag_browser_show_counts'] = True
+    defs['tag_browser_show_tooltips'] = True
     defs['row_numbers_in_book_list'] = True
     defs['hidpi'] = 'auto'
     defs['tag_browser_item_padding'] = 0.5
@@ -157,6 +167,10 @@ def create_defs():
     defs['qv_retkey_changes_column'] = True
     defs['qv_follows_column'] = False
     defs['book_details_narrow_comments_layout'] = 'float'
+    defs['book_list_split'] = False
+    defs['wrap_toolbar_text'] = False
+    defs['dnd_merge'] = True
+    defs['booklist_grid'] = False
 
 
 create_defs()
@@ -338,9 +352,9 @@ def extension(path):
 def warning_dialog(parent, title, msg, det_msg='', show=False,
         show_copy_button=True):
     from calibre.gui2.dialogs.message_box import MessageBox
-    d = MessageBox(MessageBox.WARNING, _('WARNING:')+ ' ' +
-            title, msg, det_msg, parent=parent,
-            show_copy_button=show_copy_button)
+    d = MessageBox(MessageBox.WARNING, _('WARNING:'
+        )+ ' ' + title, msg, det_msg, parent=parent,
+        show_copy_button=show_copy_button)
     if show:
         return d.exec_()
     return d
@@ -349,9 +363,9 @@ def warning_dialog(parent, title, msg, det_msg='', show=False,
 def error_dialog(parent, title, msg, det_msg='', show=False,
         show_copy_button=True):
     from calibre.gui2.dialogs.message_box import MessageBox
-    d = MessageBox(MessageBox.ERROR, _('ERROR:')+ ' ' +
-            title, msg, det_msg, parent=parent,
-                    show_copy_button=show_copy_button)
+    d = MessageBox(MessageBox.ERROR, _('ERROR:'
+        ) + ' ' + title, msg, det_msg, parent=parent,
+        show_copy_button=show_copy_button)
     if show:
         return d.exec_()
     return d
@@ -785,6 +799,8 @@ class Application(QApplication):
 
     def __init__(self, args, force_calibre_style=False, override_program_name=None, headless=False, color_prefs=gprefs):
         self.file_event_hook = None
+        if isfrozen and QT_VERSION <= 0x050700 and 'wayland' in os.environ.get('QT_QPA_PLATFORM', ''):
+            os.environ['QT_QPA_PLATFORM'] = 'xcb'
         if override_program_name:
             args = [override_program_name] + args[1:]
         if headless:
@@ -832,6 +848,11 @@ class Application(QApplication):
             if s is not None:
                 font.setStretch(s)
             QApplication.setFont(font)
+        if not isosx and not iswindows:
+            # Qt 5.10.1 on Linux resets the global font on first event loop tick.
+            # So workaround it by setting the font once again in a timer.
+            font_from_prefs = self.font()
+            QTimer.singleShot(0, lambda : QApplication.setFont(font_from_prefs))
         self.line_height = max(12, QFontMetrics(self.font()).lineSpacing())
 
         dl = QLocale(get_lang())
@@ -911,7 +932,7 @@ class Application(QApplication):
         if iswindows or isosx:
             using_calibre_style = gprefs['ui_style'] != 'system'
         else:
-            using_calibre_style = 'CALIBRE_USE_SYSTEM_THEME' not in os.environ
+            using_calibre_style = os.environ.get('CALIBRE_USE_SYSTEM_THEME', '0') == '0'
         if force_calibre_style:
             using_calibre_style = True
         self.using_calibre_style = using_calibre_style
@@ -939,6 +960,7 @@ class Application(QApplication):
             'MessageBoxCritical': u'dialog_error.png',
             'MessageBoxQuestion': u'dialog_question.png',
             'BrowserReload': u'view-refresh.png',
+            'LineEditClearButton': u'clear_left.png',
         }.iteritems():
             if v not in pcache:
                 p = I(v)

@@ -10,6 +10,7 @@ import sys
 
 from calibre import as_unicode
 from calibre.constants import is_running_from_develop, isosx, iswindows, plugins
+from calibre.db.delete_service import shutdown as shutdown_delete_service
 from calibre.db.legacy import LibraryDatabase
 from calibre.srv.bonjour import BonJour
 from calibre.srv.handler import Handler
@@ -18,6 +19,7 @@ from calibre.srv.library_broker import load_gui_libraries
 from calibre.srv.loop import ServerLoop
 from calibre.srv.manage_users_cli import manage_users_cli
 from calibre.srv.opts import opts_to_parser
+from calibre.srv.users import connect
 from calibre.srv.utils import RotatingLog
 from calibre.utils.config import prefs
 from calibre.utils.localization import localize_user_manual_link
@@ -171,6 +173,9 @@ def ensure_single_instance():
 def main(args=sys.argv):
     opts, args = create_option_parser().parse_args(args)
     ensure_single_instance()
+    if opts.userdb:
+        opts.userdb = os.path.abspath(os.path.expandvars(os.path.expanduser(opts.userdb)))
+        connect(opts.userdb, exc_class=SystemExit).close()
     if opts.manage_users:
         try:
             manage_users_cli(opts.userdb)
@@ -220,4 +225,7 @@ def main(args=sys.argv):
     # Needed for dynamic cover generation, which uses Qt for drawing
     from calibre.gui2 import ensure_app, load_builtin_fonts
     ensure_app(), load_builtin_fonts()
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        shutdown_delete_service()
